@@ -1,0 +1,9 @@
+# Core libraries for API interactions and environment variables
+mistralai
+cohere
+pinecone>=3.0.0 # Use the current official package name
+python-dotenv
+requests
+mimetypes # Standard library, but sometimes good practice to note if critical
+
+# Note: Ensure you are using a compatible version of Python (e.g., Python 3.9+)

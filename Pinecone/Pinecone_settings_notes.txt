@@ -1,0 +1,39 @@
+Pinecone
+
+The first thing we need is a place to store the embeddings we'll generate. This is where Pinecone comes in!
+
+Created index:
+
+I choose the configuration costum settings with the settings:
+
+1.Vector type:Dense
+"
+Use a dense index when you want to preserve and query the semantic structure of your document—headers, subheaders, text blocks and images all live together in the same vector space. That means a query for “G-code workflow diagram” will return the right image even without exact keyword matches. A sparse (keyword) index, by contrast, can only match literal words and can’t capture those contextual relationships.
+"
+
+
+
+
+2.Dimension:1536
+"
+What it is: The Dimension refers to the number of numerical values (usually floating-point numbers) that make up a single vector embedding. Think of it as the "length" of the list of numbers that represents your text or image.
+Where it comes from: The dimension is determined by the embedding model you use. Each model (like Cohere Embed v4, OpenAI's text-embedding-ada-002, etc.) is designed and trained to output vectors of a specific, fixed dimension. Cohere Embed v4 is flexible and allows you to choose from a set of dimensions: [256, 512, 1024, 1536].
+
+
+our Case (Cohere Embed v4): As mentioned, this model supports multiple dimensions ([256, 512, 1024, 1536]). The choice allows you to trade off between potential accuracy (higher dimensions) and resource efficiency (lower dimensions). Starting with 1024 is often a good balance.
+"
+
+
+
+
+
+3.Metric:cosine
+"What it is: The Metric defines the mathematical formula Pinecone uses to measure the "similarity" or "distance" between two vectors. When you search your index with a query vector, Pinecone uses this chosen metric to compare your query vector against all the vectors stored in the index.
+How it works: Based on the calculated similarity/distance scores, Pinecone finds the vectors in the index that are "closest" or most "similar" to your query vector.
+Common Metrics:
+cosine (Cosine Similarity): Measures the cosine of the angle between two vectors. It ignores the magnitude (length) of the vectors and focuses purely on their direction. The result ranges from -1 (exactly opposite) to 1 (exactly the same direction). Values closer to 1 mean higher similarity. This is generally the recommended metric for dense embeddings representing semantic meaning (like those from Cohere Embed v4), especially if the vectors are normalized (which many embedding models do).
+euclidean (Euclidean Distance / L2 Distance): Calculates the straight-line distance between the endpoints of two vectors in the multi-dimensional space. A smaller distance means the vectors are more similar. This metric is sensitive to the magnitude of the vectors.
+dotproduct (Dot Product): Calculates the sum of the products of corresponding elements in the two vectors. For normalized vectors, the dot product is mathematically equivalent to cosine similarity. For non-normalized vectors, it's influenced by both direction and magnitude. Higher values generally indicate greater similarity.
+Why it matters:
+Relevance: The choice of metric significantly impacts which vectors are considered "similar". Using the wrong metric can lead to poor search results.
+Model Optimization: Embedding models are often trained with a specific metric in mind. Using the metric that aligns with the model's training (or the standard practice for that type of embedding) usually yields the best performance. For models like Cohere Embed v4, cosine similarity is the standard and recommended choice."
