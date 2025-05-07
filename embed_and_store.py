@@ -1,10 +1,13 @@
+# embed_and_store.py
+# Loads OCR data, chunks it, generates multimodal embeddings (text + images) using Cohere,
+# and stores them in Pinecone.
 
 import os
 import logging
 import re
 import json
-import cohere
-from pinecone import Pinecone
+import cohere # Ensure cohere SDK is up-to-date
+from pinecone import Pinecone, ServerlessSpec, PodSpec # Import spec classes if creating index
 from dotenv import load_dotenv
 import time
 import sys
@@ -17,293 +20,302 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- API Keys and Environment Variables ---
 COHERE_API_KEY = os.environ.get("COHERE_API_KEY")
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
+PINECONE_ENVIRONMENT = os.environ.get("PINECONE_ENVIRONMENT", "gcp-starter") # Or your Pinecone environment
 
 if not COHERE_API_KEY:
-    logging.error("COHERE_API_KEY not found in environment variables. Please set it in your .env file.")
+    logging.error("COHERE_API_KEY not found. Please set it in your .env file.")
     sys.exit("Error: Missing COHERE_API_KEY.")
 if not PINECONE_API_KEY:
-    logging.error("PINECONE_API_KEY not found in environment variables. Please set it in your .env file.")
+    logging.error("PINECONE_API_KEY not found. Please set it in your .env file.")
     sys.exit("Error: Missing PINECONE_API_KEY.")
 
 # --- Input/Output Files and Pinecone/Cohere Settings ---
-OCR_OUTPUT_FILE = "processed_solidcam_doc.json" # Make sure this file exists and is populated
-PINECONE_INDEX_NAME = "solidcam-chatbot-image-embeddings"
-COHERE_MODEL_NAME = 'embed-v4.0'
-PINECONE_DIMENSION = 1024 # Ensure this matches your Pinecone index and query embedding dimension
-COHERE_INPUT_TYPE_DOC = "search_document" # For document embedding
+OCR_OUTPUT_FILE = "processed_solidcam_doc.json"
+PINECONE_INDEX_NAME = "solidcam-chatbot-image-embeddings" # Ensure this matches your Pinecone index
+COHERE_MODEL_NAME = 'embed-v4.0' # Multimodal model
+PINECONE_DIMENSION = 1024 # Dimension for embed-v4.0
+COHERE_INPUT_TYPE_DOC = "search_document" # For document embedding with embed-v4.0
 COHERE_EMBEDDING_TYPES = ["float"]
 
 # --- Rate Limiting & Batching ---
-API_CALL_DELAY_SECONDS = 0.7 # Be mindful of API rate limits
-COHERE_BATCH_SIZE = 90 # Cohere API batch limit (e.g., 96 for embed-v4.0 with ClientV2)
+API_CALL_DELAY_SECONDS = 0.5
+COHERE_BATCH_SIZE = 90 
 
 # --- Control Flags ---
-# !!! SET TO TRUE to re-populate Pinecone with the new metadata structure !!!
 CLEAR_PINECONE_INDEX_BEFORE_RUN = True
+CREATE_PINECONE_INDEX_IF_NOT_EXISTS = True
+PINECONE_INDEX_TYPE = "serverless" 
+PINECONE_CLOUD_PROVIDER = "aws" 
+PINECONE_REGION = "us-east-1" 
+PINECONE_POD_ENVIRONMENT = "gcp-starter" 
+PINECONE_POD_TYPE = "p1.x1" 
 
 # --- Regex Patterns ---
 IMAGE_TAG_PATTERN = re.compile(r'!\[(?:.*?)\]\((.*?)\)')
-EXCLUDED_HEADERS = ["See Also", "Related Topics"] # Headers to ignore for chunking
+EXCLUDED_HEADERS = ["See Also", "Related Topics"] 
 EXCLUDED_HEADERS_PATTERN = "|".join(re.escape(h) for h in EXCLUDED_HEADERS)
 HEADER_CHUNK_PATTERN = re.compile(
-    rf"^(#{{1,3}}\s+(?!({EXCLUDED_HEADERS_PATTERN})\s*$)(?!-\s).*?)$", # Valid headers (H1, H2, H3)
+    rf"^(#{{1,3}}\s+(?!({EXCLUDED_HEADERS_PATTERN})\s*$)(?!-\s)(?!=\s).*?)$",
     re.MULTILINE | re.IGNORECASE
 )
 INITIAL_TEXT_PATTERN = re.compile(rf"^(.*?)(?={HEADER_CHUNK_PATTERN.pattern}|\Z)", re.DOTALL | re.MULTILINE | re.IGNORECASE)
 
 # --- Helper Functions ---
-def create_data_url(image_filename, base64_data):
-    """Creates a Data URL from a base64 string and filename."""
-    if not base64_data: return None
-    mime_type, _ = mimetypes.guess_type(image_filename)
+def create_data_url_from_base64(image_filename_or_id, base64_data_from_ocr):
+    if not base64_data_from_ocr: return None
+    if base64_data_from_ocr.startswith('data:image'):
+        return base64_data_from_ocr 
+    mime_type, _ = mimetypes.guess_type(image_filename_or_id)
     if not mime_type:
-        mime_type = "image/jpeg" # Default if type can't be guessed
-        logging.warning(f"Could not determine MIME type for '{image_filename}'. Defaulting to '{mime_type}'.")
-    if ',' in base64_data: # Strip prefix if present
-        base64_data = base64_data.split(',', 1)[-1]
-    return f"data:{mime_type};base64,{base64_data}"
+        mime_type = "image/png" 
+        logging.debug(f"Could not determine MIME type for '{image_filename_or_id}'. Defaulting to '{mime_type}'.")
+    return f"data:{mime_type};base64,{base64_data_from_ocr}"
 
-def find_images_in_chunk(chunk_text, images_dict):
-    """Finds all image tags in a markdown chunk and returns their data URLs."""
-    found_images_data = {}
-    for match in IMAGE_TAG_PATTERN.finditer(chunk_text):
-        image_filename = match.group(1)
-        if image_filename in images_dict:
-            base64_str = images_dict[image_filename]
-            if base64_str:
-                data_url = create_data_url(image_filename, base64_str)
-                if data_url: found_images_data[image_filename] = data_url
-    return found_images_data
+def find_images_and_get_data_urls(chunk_text_content, page_level_images_dict):
+    found_images_data_urls = {}
+    for match in IMAGE_TAG_PATTERN.finditer(chunk_text_content):
+        image_filename_in_markdown = match.group(1) 
+        if image_filename_in_markdown in page_level_images_dict:
+            raw_base64_data = page_level_images_dict[image_filename_in_markdown]
+            if raw_base64_data:
+                data_url = create_data_url_from_base64(image_filename_in_markdown, raw_base64_data)
+                if data_url:
+                    found_images_data_urls[image_filename_in_markdown] = data_url
+        else:
+            logging.warning(f"Image '{image_filename_in_markdown}' referenced in markdown chunk not found in OCR image dictionary for the page. Available keys: {list(page_level_images_dict.keys())}")
+    return found_images_data_urls
 
-def chunk_markdown_and_associate_images(page_index, markdown_text, images_dict):
-    """
-    Chunks markdown based on H1, H2, H3 headers, excluding specified non-content headers.
-    Associates images found within each chunk.
-    Generates human-readable IDs like page<P>-chunk<C>.
-    Returns list of chunk objects including the header text.
-    """
+def chunk_markdown_and_associate_images(page_idx, markdown_content, images_on_page_dict):
     chunks = []
-    current_position = 0
-    chunk_index_on_page = 0
-    initial_match = INITIAL_TEXT_PATTERN.match(markdown_text)
-    header_text = "" # Default header for initial text if no specific header found
+    current_pos = 0
+    chunk_on_page_idx = 0
+    initial_match = INITIAL_TEXT_PATTERN.match(markdown_content)
+    current_header = "" 
     if initial_match:
-        initial_text = initial_match.group(1).strip()
-        if initial_text:
-            chunk_id = f"page{page_index + 1}-chunk{chunk_index_on_page}"
-            chunk_images_dataurls = find_images_in_chunk(initial_text, images_dict)
-            chunks.append({"text": initial_text, "page": page_index, "id": chunk_id,
-                           "images_dataurls": chunk_images_dataurls, "header": header_text})
-            chunk_index_on_page += 1
-        current_position = initial_match.end()
+        text_before_first_header = initial_match.group(1).strip()
+        if text_before_first_header:
+            chunk_id_str = f"page{page_idx + 1}-chunk{chunk_on_page_idx}"
+            image_data_urls_for_chunk = find_images_and_get_data_urls(text_before_first_header, images_on_page_dict)
+            chunks.append({
+                "id": chunk_id_str, "text": text_before_first_header, "page": page_idx,
+                "header": current_header, "images_dataurls": image_data_urls_for_chunk
+            })
+            chunk_on_page_idx += 1
+        current_pos = initial_match.end()
 
-    header_matches = list(HEADER_CHUNK_PATTERN.finditer(markdown_text, pos=current_position))
-    for i, header_match in enumerate(header_matches):
-        header_text = header_match.group(1).strip() # This is the actual header like "# Introduction"
-        start_pos = header_match.end()
-        end_pos = header_matches[i+1].start() if i + 1 < len(header_matches) else len(markdown_text)
-        content_text = markdown_text[start_pos:end_pos].strip()
-        chunk_text = f"{header_text}\n\n{content_text}".strip() # Include header in chunk text
-        if not chunk_text: continue # Skip if chunk ends up empty
-        chunk_id = f"page{page_index + 1}-chunk{chunk_index_on_page}"
-        chunk_images_dataurls = find_images_in_chunk(chunk_text, images_dict)
-        chunks.append({"text": chunk_text, "page": page_index, "id": chunk_id,
-                       "images_dataurls": chunk_images_dataurls, "header": header_text})
-        chunk_index_on_page += 1
-
-    if not header_matches and current_position < len(markdown_text) and not chunks: # Trailing content
-        remaining_text = markdown_text[current_position:].strip()
-        if remaining_text:
-            chunk_id = f"page{page_index + 1}-chunk{chunk_index_on_page}"
-            chunk_images_dataurls = find_images_in_chunk(remaining_text, images_dict)
-            chunks.append({"text": remaining_text, "page": page_index, "id": chunk_id,
-                           "images_dataurls": chunk_images_dataurls, "header": ""})
+    header_matches_iter = list(HEADER_CHUNK_PATTERN.finditer(markdown_content, pos=current_pos))
+    for i, match_obj in enumerate(header_matches_iter):
+        current_header = match_obj.group(1).strip()
+        content_start_pos = match_obj.end()
+        content_end_pos = header_matches_iter[i+1].start() if (i + 1) < len(header_matches_iter) else len(markdown_content)
+        text_under_header = markdown_content[content_start_pos:content_end_pos].strip()
+        full_chunk_text = f"{current_header}\n\n{text_under_header}".strip()
+        if not full_chunk_text: continue
+        chunk_id_str = f"page{page_idx + 1}-chunk{chunk_on_page_idx}"
+        image_data_urls_for_chunk = find_images_and_get_data_urls(full_chunk_text, images_on_page_dict)
+        chunks.append({
+            "id": chunk_id_str, "text": full_chunk_text, "page": page_idx,
+            "header": current_header, "images_dataurls": image_data_urls_for_chunk
+        })
+        chunk_on_page_idx += 1
+    if not chunks and not markdown_content.strip():
+        logging.debug(f"Page {page_idx} resulted in no processable chunks.")
     return chunks
 
 # --- Main Embedding and Storage Function ---
 def embed_and_store():
-    """Loads data, prepares inputs, embeds using Cohere ClientV2, and stores in Pinecone."""
-    logging.info(f"Starting embedding and storage process (Target Dimension: {PINECONE_DIMENSION}) using Cohere ClientV2 structure...")
-    process_start_time = time.time()
+    logging.info(f"Starting multimodal embedding and storage (Cohere Model: {COHERE_MODEL_NAME}, Pinecone Dim: {PINECONE_DIMENSION})...")
+    start_time_process = time.time()
 
-    # Initialize Cohere and Pinecone clients
     try:
-        co = cohere.ClientV2(api_key=COHERE_API_KEY) # Using ClientV2 as it worked for output_dimension
+        co = cohere.ClientV2(api_key=COHERE_API_KEY)
         pc = Pinecone(api_key=PINECONE_API_KEY)
+        existing_indexes_list = pc.list_indexes()
+        existing_index_names = [index_info.name for index_info in existing_indexes_list.indexes] if hasattr(existing_indexes_list, 'indexes') else []
+
+        if CREATE_PINECONE_INDEX_IF_NOT_EXISTS and PINECONE_INDEX_NAME not in existing_index_names:
+            logging.info(f"Pinecone index '{PINECONE_INDEX_NAME}' not found. Attempting to create...")
+            if PINECONE_INDEX_TYPE == "serverless":
+                spec = ServerlessSpec(cloud=PINECONE_CLOUD_PROVIDER, region=PINECONE_REGION)
+            elif PINECONE_INDEX_TYPE == "pod":
+                spec = PodSpec(environment=PINECONE_POD_ENVIRONMENT, pod_type=PINECONE_POD_TYPE, pods=1)
+            else:
+                logging.error(f"Invalid PINECONE_INDEX_TYPE: {PINECONE_INDEX_TYPE}. Must be 'serverless' or 'pod'.")
+                sys.exit(1)
+            pc.create_index(name=PINECONE_INDEX_NAME, dimension=PINECONE_DIMENSION, metric="cosine", spec=spec)
+            logging.info(f"Index '{PINECONE_INDEX_NAME}' creation initiated. Waiting for initialization...")
+            time_to_wait = 120; time_waited = 0
+            while time_waited < time_to_wait:
+                try:
+                    index_description = pc.describe_index(name=PINECONE_INDEX_NAME)
+                    if index_description.status == 'Ready':
+                        logging.info(f"Index '{PINECONE_INDEX_NAME}' is ready.")
+                        break
+                    logging.info(f"Index '{PINECONE_INDEX_NAME}' status: {index_description.status}. Waiting...")
+                except Exception as desc_e:
+                    logging.warning(f"Could not describe index '{PINECONE_INDEX_NAME}' yet: {desc_e}")
+                time.sleep(10)
+                time_waited += 10
+            if time_waited >= time_to_wait:
+                logging.error(f"Index '{PINECONE_INDEX_NAME}' did not become ready within {time_to_wait} seconds.")
+                sys.exit(1)
+        
         index = pc.Index(PINECONE_INDEX_NAME)
-        logging.info("Cohere (ClientV2) and Pinecone clients initialized.")
-        # Check current index dimension if it exists
-        try:
-            index_stats = index.describe_index_stats()
-            logging.info(f"Current Pinecone index stats: {index_stats}")
-            if index_stats.dimension != PINECONE_DIMENSION and CLEAR_PINECONE_INDEX_BEFORE_RUN:
-                logging.warning(f"Pinecone index dimension ({index_stats.dimension}) differs from target ({PINECONE_DIMENSION}) and will be cleared.")
-            elif index_stats.dimension != PINECONE_DIMENSION: # If not clearing and dimensions mismatch
-                 logging.error(f"CRITICAL: Pinecone index dimension ({index_stats.dimension}) differs from target ({PINECONE_DIMENSION}), and CLEAR_PINECONE_INDEX_BEFORE_RUN is False. This will lead to errors. Please clear the index or match dimensions.")
-                 sys.exit(1) # Exit if dimensions mismatch and not clearing
-        except Exception as e: # Catch errors if index doesn't exist yet or other issues
-            logging.warning(f"Could not fetch Pinecone index stats: {e}. This is okay if index doesn't exist yet and will be created by upsert (for serverless) or needs manual creation for pod-based.")
+        logging.info(f"Cohere (ClientV2) and Pinecone clients initialized. Using index '{PINECONE_INDEX_NAME}'.")
+        index_stats = index.describe_index_stats()
+        logging.info(f"Current Pinecone index stats: {index_stats}")
+        if index_stats.dimension != PINECONE_DIMENSION:
+            logging.error(f"CRITICAL: Pinecone index dimension ({index_stats.dimension}) differs from target ({PINECONE_DIMENSION}).")
+            sys.exit(1)
     except Exception as e:
-        logging.error(f"Client initialization failed: {e}", exc_info=True)
+        logging.error(f"Client (Cohere/Pinecone) initialization or index handling failed: {e}", exc_info=True)
         sys.exit(1)
 
-    # Load OCR data
     try:
-        with open(OCR_OUTPUT_FILE, 'r', encoding='utf-8') as f: ocr_data = json.load(f)
-        logging.info(f"Loaded OCR data from '{OCR_OUTPUT_FILE}'.")
-    except FileNotFoundError:
-        logging.error(f"OCR output file '{OCR_OUTPUT_FILE}' not found. Please run the OCR script first.")
-        sys.exit(1)
+        with open(OCR_OUTPUT_FILE, 'r', encoding='utf-8') as f: ocr_data_from_file = json.load(f)
+        logging.info(f"Loaded OCR data from '{OCR_OUTPUT_FILE}'. Contains {len(ocr_data_from_file.get('pages',[]))} pages.")
     except Exception as e:
-        logging.error(f"Error loading OCR JSON: {e}", exc_info=True)
+        logging.error(f"Error loading OCR JSON from '{OCR_OUTPUT_FILE}': {e}", exc_info=True)
         sys.exit(1)
 
-    # Generate chunks from OCR data
-    all_pages_chunks = []
-    for page_data in ocr_data.get("pages", []):
-        page_index = page_data.get("index")
-        markdown_text = page_data.get("markdown", "")
-        images_list = page_data.get("images", [])
-        images_dict = {img.get("id"): img.get("base64") for img in images_list if img.get("id") and img.get("base64")}
-        if markdown_text is None or not isinstance(markdown_text, str):
-            logging.warning(f"Skipping page {page_index} due to missing or invalid markdown text.")
+    all_document_chunks = []
+    for page_obj in ocr_data_from_file.get("pages", []):
+        page_num_idx = page_obj.get("index")
+        md_content = page_obj.get("markdown", "")
+        images_on_page_dict = {img_meta.get("id"): img_meta.get("base64") 
+                               for img_meta in page_obj.get("images", []) 
+                               if img_meta.get("id") and img_meta.get("base64")}
+        if md_content is None or not isinstance(md_content, str) or page_num_idx is None:
+            logging.warning(f"Skipping page (index: {page_num_idx}) due to missing/invalid markdown or index.")
             continue
-        if page_index is None: # Page index is crucial for ID generation
-            logging.warning(f"Skipping page with missing index. Markdown: {markdown_text[:100]}...")
-            continue
-        page_chunks = chunk_markdown_and_associate_images(page_index, markdown_text, images_dict)
-        all_pages_chunks.extend(page_chunks)
-    logging.info(f"Generated {len(all_pages_chunks)} total chunks.")
-    if not all_pages_chunks:
-        logging.warning("No chunks were generated from the OCR data. Exiting.")
+        chunks_from_page = chunk_markdown_and_associate_images(page_num_idx, md_content, images_on_page_dict)
+        all_document_chunks.extend(chunks_from_page)
+    logging.info(f"Generated {len(all_document_chunks)} total chunks for embedding.")
+    if not all_document_chunks:
+        logging.warning("No chunks were generated from OCR data. Exiting.")
         return
 
-    # Prepare inputs for Cohere ClientV2 embed method
-    inputs_for_cohere_v2 = []
-    chunk_lookup = {} # To map chunk IDs back to original chunk data after embedding
-    for chunk in all_pages_chunks:
-        chunk_id = chunk['id']
-        chunk_text = chunk['text']
-        content_list = []
-        if chunk_text: # Ensure there is text to embed
-            content_list.append({"type": "text", "text": chunk_text})
-        # If you plan to add multimodal inputs (e.g., image URLs) for embed-v4.0,
-        # they would be added to content_list here, e.g.:
-        # for img_filename, data_url in chunk['images_dataurls'].items():
-        #     if data_url: content_list.append({"type": "image_url", "image_url": {"url": data_url}})
-        if content_list: # Only add if there's content
-            inputs_for_cohere_v2.append({"id": chunk_id, "input_doc_structure": {"content": content_list}})
-            chunk_lookup[chunk_id] = chunk
-    logging.info(f"Prepared {len(inputs_for_cohere_v2)} inputs for Cohere ClientV2 embedding.")
+    cohere_api_inputs = []; input_index_to_chunk_id_map = {}
+    for idx, chunk_data in enumerate(all_document_chunks):
+        chunk_id = chunk_data['id']; text_content = chunk_data['text']; image_dataurls_map = chunk_data['images_dataurls'] 
+        api_content_list_for_chunk = []
+        if text_content and text_content.strip():
+            api_content_list_for_chunk.append({"type": "text", "text": text_content.strip()})
+        for md_filename, data_url_val in image_dataurls_map.items():
+            if data_url_val:
+                api_content_list_for_chunk.append({"type": "image_url", "image_url": {"url": data_url_val}})
+                logging.debug(f"Adding image '{md_filename}' (as data URL) to content for chunk {chunk_id}")
+        if api_content_list_for_chunk: 
+            cohere_api_inputs.append({"content": api_content_list_for_chunk})
+            input_index_to_chunk_id_map[len(cohere_api_inputs) - 1] = chunk_id
+        else:
+            logging.warning(f"Chunk {chunk_id} has no text or image content after processing. Skipping.")
+    logging.info(f"Prepared {len(cohere_api_inputs)} structured inputs for Cohere embedding.")
+    if not cohere_api_inputs:
+        logging.warning("No inputs prepared for Cohere. Exiting.")
+        return
 
-    # Embed chunks using Cohere ClientV2
-    embeddings_dict = {} # {chunk_id: embedding_vector}
-    embedded_count = 0
-    failed_count = 0
-    for i in range(0, len(inputs_for_cohere_v2), COHERE_BATCH_SIZE):
-        batch_items_v2 = inputs_for_cohere_v2[i : i + COHERE_BATCH_SIZE]
-        batch_ids_v2 = [item['id'] for item in batch_items_v2]
-        batch_inputs_for_api = [item['input_doc_structure'] for item in batch_items_v2] # Get the structured input part
-        if not batch_inputs_for_api: continue # Skip if batch is empty
+    successful_embeddings_map = {}; num_embedded = 0; num_failed = 0
+    for i in range(0, len(cohere_api_inputs), COHERE_BATCH_SIZE):
+        current_batch_api_inputs = cohere_api_inputs[i : i + COHERE_BATCH_SIZE]
+        current_batch_chunk_ids = [input_index_to_chunk_id_map[original_idx] for original_idx in range(i, i + len(current_batch_api_inputs))]
+        if not current_batch_api_inputs: continue
         try:
-            logging.info(f"Embedding batch (ClientV2) starting with ID {batch_ids_v2[0]} ({len(batch_inputs_for_api)} items)...")
-            response = co.embed(
-                model=COHERE_MODEL_NAME,
-                inputs=batch_inputs_for_api, # Pass the list of structured inputs
-                input_type=COHERE_INPUT_TYPE_DOC,
-                embedding_types=COHERE_EMBEDDING_TYPES,
-                output_dimension=PINECONE_DIMENSION # This worked with ClientV2
-            )
-            # Access embeddings from response.embeddings.float for ClientV2
-            if hasattr(response, 'embeddings') and response.embeddings and \
-               hasattr(response.embeddings, 'float') and \
-               len(response.embeddings.float) == len(batch_ids_v2):
-                embeddings_batch = response.embeddings.float
-                for chunk_id, embedding in zip(batch_ids_v2, embeddings_batch):
-                    embeddings_dict[chunk_id] = embedding
-                embedded_count += len(batch_ids_v2)
+            logging.info(f"Embedding batch {i//COHERE_BATCH_SIZE + 1}/{ (len(cohere_api_inputs) -1)//COHERE_BATCH_SIZE + 1 } ({len(current_batch_api_inputs)} items)...")
+            api_response = co.embed(model=COHERE_MODEL_NAME, inputs=current_batch_api_inputs, input_type=COHERE_INPUT_TYPE_DOC, embedding_types=COHERE_EMBEDDING_TYPES, output_dimension=PINECONE_DIMENSION)
+            response_embeddings = None
+            if hasattr(api_response, 'embeddings'):
+                if isinstance(api_response.embeddings, list): response_embeddings = api_response.embeddings
+                elif hasattr(api_response.embeddings, 'float') and isinstance(api_response.embeddings.float, list): response_embeddings = api_response.embeddings.float
+                elif isinstance(api_response.embeddings, dict) and 'float' in api_response.embeddings and isinstance(api_response.embeddings['float'], list): response_embeddings = api_response.embeddings['float']
+            if response_embeddings and len(response_embeddings) == len(current_batch_api_inputs):
+                for batch_idx, vector in enumerate(response_embeddings):
+                    original_chunk_id = current_batch_chunk_ids[batch_idx]
+                    successful_embeddings_map[original_chunk_id] = vector
+                num_embedded += len(current_batch_api_inputs)
+                logging.info(f"Successfully embedded batch of {len(current_batch_api_inputs)} items.")
             else:
-                logging.error(f"Embedding response error or mismatch for batch (ClientV2) {batch_ids_v2[0]}. Response: {response}")
-                failed_count += len(batch_ids_v2)
-            time.sleep(API_CALL_DELAY_SECONDS) # Respect API rate limits
-        except Exception as embed_e:
-            logging.error(f"Failed to embed batch (ClientV2) {batch_ids_v2[0]}: {embed_e}", exc_info=False) # exc_info=False for cleaner logs on repeated errors
-            failed_count += len(batch_ids_v2)
-    logging.info(f"Embedding attempts (ClientV2). Success: {embedded_count}, Failures: {failed_count}")
+                logging.error(f"Embedding response error or mismatch for batch. Expected {len(current_batch_api_inputs)} embeddings. Response: {api_response}")
+                num_failed += len(current_batch_api_inputs)
+            time.sleep(API_CALL_DELAY_SECONDS)
+        except Exception as e:
+            logging.error(f"Failed to embed batch: {e}", exc_info=True)
+            num_failed += len(current_batch_api_inputs)
+    logging.info(f"Total embedding attempts - Success: {num_embedded}, Failures: {num_failed}")
 
-    # Prepare vectors for Pinecone upsert
-    vectors_to_upsert = []
-    for chunk_id, embedding in embeddings_dict.items():
-        original_chunk_data = chunk_lookup.get(chunk_id)
-        if original_chunk_data:
-            image_filenames = [os.path.basename(fn) for fn in original_chunk_data["images_dataurls"].keys()]
-            metadata = {
-                "vector_id": chunk_id, # Store the Pinecone vector ID (which is our chunk_id) in metadata
-                "page": original_chunk_data["page"] + 1, # 1-based page number
-                "header": original_chunk_data.get("header", ""),
-                "text_snippet": original_chunk_data["text"][:1000], # For PineconeVectorStore text_key
-                "image_ids": image_filenames,
-                "has_images": len(image_filenames) > 0
+    pinecone_vectors_to_upsert = []
+    for chunk_obj in all_document_chunks:
+        c_id = chunk_obj['id']
+        if c_id in successful_embeddings_map:
+            embedding_vec = successful_embeddings_map[c_id]
+            img_filenames = list(chunk_obj["images_dataurls"].keys())
+            # REMOVED: img_data_urls = list(chunk_obj["images_dataurls"].values())
+            meta_payload = {
+                "vector_id": c_id, "page": chunk_obj["page"] + 1, "header": chunk_obj.get("header", ""),
+                "text_snippet": chunk_obj["text"][:2000], 
+                "image_ids": img_filenames, # Store only image IDs (filenames)
+                "has_images": len(img_filenames) > 0
+                # REMOVED: "image_data_urls": img_data_urls 
             }
-            vectors_to_upsert.append((chunk_id, embedding, metadata)) # Pinecone vector ID, embedding, metadata
-    logging.info(f"Prepared {len(vectors_to_upsert)} vectors for Pinecone.")
+            pinecone_vectors_to_upsert.append({"id": c_id, "values": embedding_vec, "metadata": meta_payload})
+        else:
+            logging.warning(f"No successful embedding found for chunk_id {c_id}. It might have failed or been skipped.")
+    logging.info(f"Prepared {len(pinecone_vectors_to_upsert)} vectors for Pinecone upsert (metadata size reduced).")
 
-    # Upsert vectors to Pinecone
-    if vectors_to_upsert:
-        logging.info(f"Upserting {len(vectors_to_upsert)} vectors to Pinecone index '{PINECONE_INDEX_NAME}'...")
+    if pinecone_vectors_to_upsert:
+        logging.info(f"Upserting {len(pinecone_vectors_to_upsert)} vectors to Pinecone index '{PINECONE_INDEX_NAME}'...")
         try:
-            pinecone_batch_size = 100 # Pinecone recommends batches of 100 or fewer for upsert
-            for i in range(0, len(vectors_to_upsert), pinecone_batch_size):
-                batch_to_upsert = vectors_to_upsert[i : i + pinecone_batch_size]
-                index.upsert(vectors=batch_to_upsert)
-                logging.info(f"Upserted batch of {len(batch_to_upsert)} vectors to Pinecone.")
-            logging.info(f"Successfully upserted {len(vectors_to_upsert)} vectors.")
-            final_stats_after_upsert = index.describe_index_stats()
-            logging.info(f"Final Pinecone index stats after upsert: {final_stats_after_upsert}")
-        except Exception as pinecone_e:
-            logging.error(f"Failed during Pinecone upsert: {pinecone_e}", exc_info=True)
+            pinecone_upsert_batch_size = 20 
+            for i in range(0, len(pinecone_vectors_to_upsert), pinecone_upsert_batch_size):
+                batch_for_pinecone = pinecone_vectors_to_upsert[i : i + pinecone_upsert_batch_size]
+                index.upsert(vectors=batch_for_pinecone) 
+                logging.info(f"Upserted batch of {len(batch_for_pinecone)} vectors to Pinecone.")
+            logging.info(f"Successfully upserted {len(pinecone_vectors_to_upsert)} vectors.")
+            final_stats = index.describe_index_stats()
+            logging.info(f"Final Pinecone index stats: {final_stats}")
+        except Exception as pinecone_err:
+            logging.error(f"Failed during Pinecone upsert: {pinecone_err}", exc_info=True)
     else:
-        logging.info("No vectors to upsert.")
-    process_end_time = time.time()
-    logging.info(f"Embedding and storage function finished in {process_end_time - process_start_time:.2f} seconds.")
+        logging.info("No vectors to upsert to Pinecone.")
+    end_time_process = time.time()
+    logging.info(f"Embedding and storage process finished in {end_time_process - start_time_process:.2f} seconds.")
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    main_start_time = time.time()
-    logging.info("Starting main script execution (using ClientV2 structure for embedding)...")
-
+    script_start_time = time.time()
+    logging.info("Starting main script execution for multimodal embedding and storage...")
     if CLEAR_PINECONE_INDEX_BEFORE_RUN:
-         logging.warning(f"Attempting to clear Pinecone index '{PINECONE_INDEX_NAME}' as CLEAR_PINECONE_INDEX_BEFORE_RUN is True...")
-         try:
-             pc_mgmt = Pinecone(api_key=PINECONE_API_KEY)
-             existing_indexes = [idx_spec.name for idx_spec in pc_mgmt.list_indexes()] # Get list of index names
-             if PINECONE_INDEX_NAME in existing_indexes:
-                 index_to_clear = pc_mgmt.Index(PINECONE_INDEX_NAME)
-                 # Check if index is empty before trying to delete all (to avoid 404 on empty default namespace)
-                 stats_before_clear = index_to_clear.describe_index_stats()
-                 if stats_before_clear.total_vector_count > 0:
-                     index_to_clear.delete(delete_all=True) # Clears all vectors in the default namespace
-                     logging.info(f"Clear command (delete_all=True) initiated for index '{PINECONE_INDEX_NAME}'. Waiting ~30s for operation to reflect...")
-                     time.sleep(30) # Give some time for the delete_all operation
-                 else:
-                     logging.info(f"Index '{PINECONE_INDEX_NAME}' is already empty. No need to call delete_all.")
-                 stats_after_clear = index_to_clear.describe_index_stats() # Check stats again
-                 logging.info(f"Pinecone index stats post-clear attempt: {stats_after_clear}")
-             else:
-                 logging.info(f"Pinecone index '{PINECONE_INDEX_NAME}' not found, skipping clear. It might be created on first upsert (serverless) or needs manual creation (pod-based).")
-         except Exception as delete_e:
-             logging.error(f"Could not clear Pinecone index '{PINECONE_INDEX_NAME}': {delete_e}", exc_info=True)
+        logging.warning(f"CLEAR_PINECONE_INDEX_BEFORE_RUN is True. Attempting to clear Pinecone index '{PINECONE_INDEX_NAME}'...")
+        try:
+            pc_manage = Pinecone(api_key=PINECONE_API_KEY)
+            index_list_response = pc_manage.list_indexes()
+            current_index_names = [index_info.name for index_info in index_list_response.indexes] if hasattr(index_list_response, 'indexes') else []
+            if PINECONE_INDEX_NAME in current_index_names:
+                index_to_manage = pc_manage.Index(PINECONE_INDEX_NAME)
+                stats_before = index_to_manage.describe_index_stats()
+                if stats_before.total_vector_count > 0:
+                    logging.info(f"Index '{PINECONE_INDEX_NAME}' has {stats_before.total_vector_count} vectors. Deleting all...")
+                    index_to_manage.delete(delete_all=True) 
+                    logging.info(f"Clear command (delete_all=True) initiated for index '{PINECONE_INDEX_NAME}'. Waiting ~30s for operation to reflect...")
+                    time.sleep(30) 
+                else:
+                    logging.info(f"Index '{PINECONE_INDEX_NAME}' is already empty.")
+                stats_after = index_to_manage.describe_index_stats()
+                logging.info(f"Pinecone index stats post-clear attempt: {stats_after}")
+            else:
+                logging.info(f"Pinecone index '{PINECONE_INDEX_NAME}' not found, skipping clear. It might be created if CREATE_PINECONE_INDEX_IF_NOT_EXISTS is True.")
+        except Exception as del_e:
+            logging.error(f"Could not clear Pinecone index '{PINECONE_INDEX_NAME}': {del_e}", exc_info=True)
     else:
         logging.info("CLEAR_PINECONE_INDEX_BEFORE_RUN is False. Index will not be cleared.")
 
     try:
         embed_and_store()
-        logging.info("Embedding and storage script finished successfully.")
-    except SystemExit: # Allow sys.exit() to terminate script gracefully
-        pass # Already logged by sys.exit call
-    except Exception as e:
-        logging.error(f"An error occurred during the main execution of embedding script: {e}", exc_info=True)
-        sys.exit(1) # Exit with error code
+        logging.info("Multimodal embedding and storage script finished successfully.")
+    except SystemExit: pass 
+    except Exception as main_exec_e:
+        logging.error(f"An error occurred during the main execution of embedding script: {main_exec_e}", exc_info=True)
+        sys.exit(1) 
     finally:
-        main_end_time = time.time()
-        logging.info(f"Total script execution time: {main_end_time - main_start_time:.2f} seconds")
+        script_end_time = time.time()
+        logging.info(f"Total script execution time: {script_end_time - script_start_time:.2f} seconds")

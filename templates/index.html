@@ -18,27 +18,29 @@
         align-items: center;
         min-height: 100vh;
         margin: 0;
-        padding: 0.5rem; /* Small padding for very small screens */
+        padding: 0.5rem;
       }
       .chat-container {
-        background-color: #ffffff; /* White */
+        background-color: #ffffff;
         box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1),
-          0 10px 10px -5px rgba(0, 0, 0, 0.04); /* Tailwind shadow-xl */
-        border-radius: 0.5rem; /* Tailwind rounded-lg */
+          0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        border-radius: 0.75rem; /* rounded-xl */
         width: 100%;
-        max-width: 42rem; /* Tailwind max-w-2xl */
+        max-width: 48rem; /* Tailwind max-w-3xl */
         display: flex;
         flex-direction: column;
-        height: calc(100vh - 1rem); /* Adjusted height for small padding */
-        max-height: 700px; /* Max height for the chat window */
+        height: calc(
+          100vh - 1rem - 2rem
+        ); /* Full height minus body padding and some breathing room */
+        max-height: 800px;
       }
       @media (min-width: 640px) {
         /* sm breakpoint */
         body {
-          padding: 1rem; /* More padding for larger screens */
+          padding: 1rem;
         }
         .chat-container {
-          height: calc(100vh - 2rem); /* Adjusted height */
+          height: calc(100vh - 2rem - 2rem);
         }
       }
 
@@ -46,20 +48,21 @@
         width: 8px;
       }
       #chatMessages::-webkit-scrollbar-track {
-        background: #f1f1f1; /* Lighter track */
+        background: #e5e7eb;
         border-radius: 10px;
-      }
+      } /* gray-200 */
       #chatMessages::-webkit-scrollbar-thumb {
-        background: #cbd5e1; /* Tailwind slate-300 */
+        background: #9ca3af;
         border-radius: 10px;
-      }
+      } /* gray-400 */
       #chatMessages::-webkit-scrollbar-thumb:hover {
-        background: #94a3b8; /* Tailwind slate-400 */
-      }
+        background: #6b7280;
+      } /* gray-500 */
+
       .chat-bubble-container {
         opacity: 0;
-        transform: translateY(20px);
-        animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; /* Smoother pop-in */
+        transform: translateY(15px);
+        animation: popIn 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
       }
       @keyframes popIn {
         to {
@@ -67,41 +70,66 @@
           transform: translateY(0);
         }
       }
+
       .chat-bubble {
         transition: background-color 0.2s ease-out;
-        word-wrap: break-word; /* Ensure long words break */
-        overflow-wrap: break-word; /* Ensure long words break */
-        hyphens: auto; /* Allow hyphenation */
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+        hyphens: auto;
+        padding: 0.75rem 1rem; /* p-3 sm:p-4 */
       }
       .chat-bubble.user {
-        background-color: #2563eb; /* Tailwind blue-600 */
+        background-color: #2563eb; /* blue-600 */
         color: white;
-        border-radius: 0.75rem 0.75rem 0.125rem 0.75rem; /* Slightly different rounding for user */
+        border-radius: 1rem 1rem 0.25rem 1rem; /* rounded-2xl rounded-br-md */
       }
       .chat-bubble.bot {
-        background-color: #f9fafb; /* Tailwind gray-50 */
-        color: #1f2937; /* Tailwind gray-800 */
-        border: 1px solid #e5e7eb; /* Tailwind gray-200 */
-        border-radius: 0.75rem 0.75rem 0.75rem 0.125rem; /* Slightly different rounding for bot */
+        background-color: #f9fafb; /* gray-50 */
+        color: #1f2937; /* gray-800 */
+        border: 1px solid #e5e7eb; /* gray-200 */
+        border-radius: 1rem 1rem 1rem 0.25rem; /* rounded-2xl rounded-bl-md */
       }
       .source-document {
-        border-left: 3px solid #f59e0b; /* Tailwind amber-500 */
+        border-left: 4px solid #f59e0b; /* amber-500 */
         transition: background-color 0.2s ease;
         cursor: pointer;
-        background-color: #fffbeb; /* Tailwind amber-50 */
+        background-color: #fffbeb; /* amber-50 */
+        padding: 0.5rem 0.75rem; /* p-2 px-3 */
+        border-radius: 0.375rem; /* rounded-md */
       }
       .source-document:hover {
-        background-color: #fef3c7; /* Tailwind amber-100 */
+        background-color: #fef3c7;
+      } /* amber-100 */
+
+      .source-document .snippet-toggle {
+        font-weight: 500;
+        color: #7c2d12; /* amber-800 */
       }
-      .source-document .snippet {
+      .source-document .snippet-content {
         display: none;
-        font-size: 0.75rem; /* text-xs */
-        color: #4b5563; /* Tailwind gray-600 */
-        margin-top: 0.25rem; /* mt-1 */
-        padding-top: 0.25rem; /* pt-1 */
-        border-top: 1px dashed #d1d5db; /* Tailwind gray-300 */
-        white-space: pre-wrap; /* Preserve whitespace in snippet */
+        font-size: 0.875rem; /* text-sm */
+        color: #4b5563; /* gray-600 */
+        margin-top: 0.5rem; /* mt-2 */
+        padding-top: 0.5rem; /* pt-2 */
+        border-top: 1px dashed #d1d5db; /* gray-300 */
+        white-space: pre-wrap;
+        max-height: 150px;
+        overflow-y: auto;
       }
+      .source-images-container {
+        margin-top: 0.5rem; /* mt-2 */
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem; /* gap-2 */
+      }
+      .source-images-container img {
+        max-width: 100px; /* Limit image preview size */
+        max-height: 100px;
+        border-radius: 0.375rem; /* rounded-md */
+        border: 1px solid #d1d5db; /* gray-300 */
+        object-fit: contain; /* Show entire image, might leave empty space */
+      }
+
       .typing-indicator span {
         animation: blink 1.4s infinite both;
       }
@@ -112,30 +140,31 @@
         animation-delay: 0.4s;
       }
       @keyframes blink {
-        0% {
+        0%,
+        100% {
           opacity: 0.2;
         }
         20% {
           opacity: 1;
         }
-        100% {
-          opacity: 0.2;
-        }
       }
+
       .error-message {
-        background-color: #fee2e2; /* Tailwind red-100 */
-        color: #b91c1c; /* Tailwind red-700 */
-        border-left: 4px solid #ef4444; /* Tailwind red-500 */
+        background-color: #fee2e2; /* red-100 */
+        color: #b91c1c; /* red-700 */
+        border-left: 4px solid #ef4444; /* red-500 */
       }
     </style>
   </head>
   <body>
     <div class="chat-container">
       <header
-        class="bg-gradient-to-r from-blue-600 to-indigo-700 text-white p-4 rounded-t-lg shadow-md flex-shrink-0"
+        class="bg-gradient-to-r from-blue-600 to-indigo-700 text-white p-4 shadow-lg flex-shrink-0 rounded-t-xl"
       >
-        <h1 class="text-xl font-semibold text-center">SolidCAM Chatbot</h1>
-        <p class="text-xs text-center text-blue-200">Created by Peleg Chen</p>
+        <h1 class="text-2xl font-semibold text-center">SolidCAM Chatbot</h1>
+        <p class="text-sm text-center text-blue-200">
+          Multimodal RAG Demo by Peleg Chen
+        </p>
       </header>
 
       <div
@@ -143,41 +172,42 @@
         class="flex-grow p-4 sm:p-6 space-y-4 overflow-y-auto bg-slate-100"
       >
         <div class="flex justify-start chat-bubble-container">
-          <div
-            class="chat-bubble bot max-w-md md:max-w-lg p-3 rounded-lg shadow"
-          >
-            <p class="text-sm">
-              Hello! My name is SolidChat, How can I assist you today?
+          <div class="chat-bubble bot max-w-lg md:max-w-xl shadow-md">
+            <p class="text-base">
+              Hello! I'm SolidChat, your assistant for the SolidCAM "Milling
+              2024 Machining Processes" document. How can I help you today?
             </p>
           </div>
         </div>
       </div>
 
       <div id="typingIndicator" class="px-4 sm:px-6 py-2 hidden flex-shrink-0">
-        <div class="flex items-center space-x-1">
+        <div class="flex items-center space-x-1.5">
           <div
             class="chat-bubble bot p-3 rounded-lg shadow-sm inline-flex items-center"
           >
-            <span class="h-2 w-2 bg-slate-400 rounded-full"></span>
-            <span class="h-2 w-2 bg-slate-400 rounded-full"></span>
-            <span class="h-2 w-2 bg-slate-400 rounded-full"></span>
+            <span class="h-2.5 w-2.5 bg-slate-400 rounded-full"></span>
+            <span class="h-2.5 w-2.5 bg-slate-400 rounded-full"></span>
+            <span class="h-2.5 w-2.5 bg-slate-400 rounded-full"></span>
           </div>
         </div>
       </div>
 
       <footer
-        class="bg-white border-t border-gray-200 p-3 sm:p-4 rounded-b-lg shadow-inner flex-shrink-0"
+        class="bg-white border-t border-gray-200 p-3 sm:p-4 shadow-inner flex-shrink-0 rounded-b-xl"
       >
         <div class="flex items-center space-x-2 sm:space-x-3">
           <input
             type="text"
             id="userInput"
-            class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-shadow text-sm sm:text-base"
-            placeholder="Ask me something..."
+            class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-shadow text-base"
+            placeholder="Ask about Machining Processes..."
+            aria-label="User input"
           />
           <button
             id="sendButton"
-            class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 sm:px-6 rounded-lg shadow-md hover:shadow-lg transition-all duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 text-sm sm:text-base"
+            class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 sm:px-5 rounded-lg shadow-md hover:shadow-lg transition-all duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50"
+            aria-label="Send message"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -200,30 +230,31 @@
       const sendButton = document.getElementById("sendButton");
       const typingIndicator = document.getElementById("typingIndicator");
 
-      // Sanitize HTML content to prevent XSS - basic textContent usage is safer
       function sanitizeText(str) {
         const temp = document.createElement("div");
-        temp.textContent = str; // This inherently sanitizes by treating input as text
-        return temp.innerHTML; // Return the text content, now HTML-encoded if it had special chars
+        temp.textContent = str;
+        return temp.innerHTML;
       }
 
       function addMessage(message, isUser, sources = null, isError = false) {
         const messageContainer = document.createElement("div");
-        messageContainer.classList.add("flex", "chat-bubble-container");
+        messageContainer.classList.add(
+          "flex",
+          "chat-bubble-container",
+          "w-full"
+        );
 
         const messageDiv = document.createElement("div");
         messageDiv.classList.add(
           "chat-bubble",
-          "max-w-md",
-          "md:max-w-lg",
-          "p-3",
-          "rounded-lg",
+          "max-w-lg", // Max width for user bubbles
+          "md:max-w-xl", // Max width for bot bubbles (can be larger)
           "shadow-md"
         );
 
         const p = document.createElement("p");
-        p.classList.add("text-sm");
-        p.textContent = message; // Safely set the main message content
+        p.classList.add(isUser ? "text-base" : "text-base", "leading-relaxed"); // Consistent text size
+        p.innerHTML = message.replace(/\n/g, "<br>"); // Replace newlines with <br> for display
         messageDiv.appendChild(p);
 
         if (isUser) {
@@ -231,147 +262,163 @@
           messageDiv.classList.add("user");
         } else {
           messageContainer.classList.add("justify-start");
+          messageDiv.classList.add("bot"); // Bot bubbles can be wider
           if (isError) {
-            messageDiv.classList.add("error-message", "bot");
-          } else {
-            messageDiv.classList.add("bot");
+            messageDiv.classList.add("error-message"); // Keep specific error styling
           }
 
           if (sources && sources.length > 0) {
             const sourcesContainer = document.createElement("div");
             sourcesContainer.classList.add(
               "mt-3",
-              "pt-2",
+              "pt-3",
               "border-t",
-              "border-gray-300"
+              "border-gray-300",
+              "space-y-2"
             );
 
             const sourcesTitle = document.createElement("h4");
             sourcesTitle.classList.add(
-              "text-xs",
+              "text-sm",
               "font-semibold",
               "text-gray-700",
-              "mb-1"
+              "mb-1.5"
             );
             sourcesTitle.textContent = "Retrieved Sources:";
             sourcesContainer.appendChild(sourcesTitle);
 
-            const sourcesList = document.createElement("ul");
-            sourcesList.classList.add("space-y-1");
-            sources.forEach((source) => {
-              const listItem = document.createElement("li");
-              listItem.classList.add(
-                "text-xs",
-                "text-gray-600",
-                "p-2",
-                "rounded-md",
-                "source-document"
-              );
-              listItem.setAttribute("title", "Click to see snippet");
+            sources.forEach((source, index) => {
+              const sourceItem = document.createElement("div");
+              sourceItem.classList.add("source-document");
 
-              let sourceText = `Page ${sanitizeText(source.page || "N/A")}`;
-              if (source.header) {
-                sourceText += `, Header: '${sanitizeText(source.header)}'`;
-              }
-              if (source.id && source.id !== "N/A") {
-                // Display the vector_id
-                sourceText += ` (ID: ${sanitizeText(source.id)})`;
-              }
-              listItem.textContent = sourceText;
+              const sourceInfo = document.createElement("p");
+              sourceInfo.classList.add(
+                "text-xs",
+                "text-gray-700",
+                "snippet-toggle"
+              );
+              sourceInfo.innerHTML = `<b>Source ${
+                index + 1
+              }:</b> Page ${sanitizeText(source.page || "N/A")}${
+                source.header
+                  ? `, Header: '${sanitizeText(source.header)}'`
+                  : ""
+              } (ID: ${sanitizeText(
+                source.id || "N/A"
+              )}) <span class="text-amber-600 text-xs">(click to toggle snippet)</span>`;
+              sourceItem.appendChild(sourceInfo);
 
               if (source.snippet) {
-                const snippetDiv = document.createElement("div");
-                snippetDiv.classList.add("snippet");
-                snippetDiv.textContent = sanitizeText(source.snippet); // Display sanitized snippet
-                listItem.appendChild(snippetDiv);
+                const snippetContent = document.createElement("div");
+                snippetContent.classList.add("snippet-content");
+                snippetContent.textContent = sanitizeText(source.snippet);
+                sourceItem.appendChild(snippetContent);
 
-                listItem.addEventListener("click", (e) => {
-                  e.stopPropagation(); // Prevent click from bubbling up if needed
-                  snippetDiv.style.display =
-                    snippetDiv.style.display === "none" ? "block" : "none";
+                sourceInfo.addEventListener("click", (e) => {
+                  e.stopPropagation();
+                  snippetContent.style.display =
+                    snippetContent.style.display === "none" ? "block" : "none";
                 });
               }
-              sourcesList.appendChild(listItem);
+
+              // Display images if image_data_urls are present
+              if (source.image_data_urls && source.image_data_urls.length > 0) {
+                const imagesDiv = document.createElement("div");
+                imagesDiv.classList.add("source-images-container");
+                source.image_data_urls.forEach((dataUrl) => {
+                  if (dataUrl) {
+                    // Ensure dataUrl is not null or empty
+                    const imgElement = document.createElement("img");
+                    imgElement.src = dataUrl;
+                    imgElement.alt = `Source Image from Page ${sanitizeText(
+                      source.page || "N/A"
+                    )}`;
+                    // Add error handling for images
+                    imgElement.onerror = function () {
+                      this.alt = "Image failed to load";
+                      this.style.display = "none"; // Optionally hide broken images
+                      console.warn(
+                        "Failed to load image:",
+                        dataUrl.substring(0, 50) + "..."
+                      );
+                    };
+                    imagesDiv.appendChild(imgElement);
+                  }
+                });
+                sourceItem.appendChild(imagesDiv);
+              }
+              sourcesContainer.appendChild(sourceItem);
             });
-            sourcesContainer.appendChild(sourcesList);
             messageDiv.appendChild(sourcesContainer);
           }
         }
 
         messageContainer.appendChild(messageDiv);
         chatMessages.appendChild(messageContainer);
-        chatMessages.scrollTop = chatMessages.scrollHeight; // Auto-scroll to the latest message
+        chatMessages.scrollTop = chatMessages.scrollHeight;
       }
 
       async function handleSendMessage() {
         const messageText = userInput.value.trim();
         if (!messageText) return;
 
-        addMessage(messageText, true); // Display user's message immediately
-        userInput.value = ""; // Clear input field
-        userInput.disabled = true; // Disable input while processing
-        sendButton.disabled = true; // Disable send button
-        typingIndicator.classList.remove("hidden"); // Show typing indicator
-        chatMessages.scrollTop = chatMessages.scrollHeight; // Scroll to typing indicator
+        addMessage(sanitizeText(messageText), true);
+        userInput.value = "";
+        userInput.disabled = true;
+        sendButton.disabled = true;
+        typingIndicator.classList.remove("hidden");
+        chatMessages.scrollTop = chatMessages.scrollHeight;
 
         try {
-          // Make API call to the Flask backend - *** USE CORRECT PORT ***
           const response = await fetch("http://localhost:7001/chat", {
-            // <-- Changed to 7001
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ message: messageText }),
           });
 
+          typingIndicator.classList.add("hidden"); // Hide typing indicator once response starts processing
+
           if (!response.ok) {
-            // Check if response status is not OK (e.g., 4xx, 5xx)
-            const errorData = await response
-              .json()
-              .catch(() => ({
-                error: "Unknown server error. Status: " + response.status,
-              }));
+            const errorData = await response.json().catch(() => ({
+              error: `Server error: ${response.status} ${response.statusText}. Check console for details.`,
+            }));
             addMessage(
-              `Error: ${
-                errorData.error || "Failed to get response from server."
-              }`,
+              sanitizeText(errorData.error || "Failed to get response."),
               false,
               null,
               true
             );
-            console.error("Server error response:", errorData);
+            console.error("Server error response:", errorData, response);
           } else {
             const data = await response.json();
-            addMessage(data.answer, false, data.sources); // Display bot's answer and sources
+            addMessage(data.answer, false, data.sources); // Bot's answer often contains markdown/newlines
           }
         } catch (error) {
-          // Catch network errors or other issues with fetch
+          typingIndicator.classList.add("hidden");
           addMessage(
-            "Network error or the chatbot server is down. Please check the console and try again later.",
+            "Network error or chatbot server is unavailable. Please check the console and try again later.",
             false,
             null,
             true
           );
           console.error("Fetch API error:", error);
         } finally {
-          // Re-enable input and hide typing indicator regardless of success or failure
-          typingIndicator.classList.add("hidden");
           userInput.disabled = false;
           sendButton.disabled = false;
-          userInput.focus(); // Set focus back to input field
+          userInput.focus();
         }
       }
 
       sendButton.addEventListener("click", handleSendMessage);
       userInput.addEventListener("keypress", (event) => {
-        if (event.key === "Enter") {
-          event.preventDefault(); // Prevent default Enter key action (e.g., form submission)
+        if (event.key === "Enter" && !event.shiftKey) {
+          // Send on Enter, allow Shift+Enter for new line in input (though input is single line)
+          event.preventDefault();
           handleSendMessage();
         }
       });
 
-      userInput.focus(); // Initial focus on the input field when page loads
+      userInput.focus();
     </script>
   </body>
 </html>

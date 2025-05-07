@@ -1,3 +1,7 @@
+# app.py
+# Flask web application for the RAG chatbot.
+# Includes logic to pass image data URLs to the frontend.
+
 import os
 import logging
 from dotenv import load_dotenv
@@ -15,7 +19,7 @@ from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain_cohere import CohereRerank, ChatCohere # Langchain's Cohere components
 from langchain.retrievers import ContextualCompressionRetriever
-from langchain_core.documents import Document # To help structure source documents if needed
+# from langchain_core.documents import Document # Not explicitly used here but good for reference
 
 # --- Configuration ---
 load_dotenv() # Load environment variables from .env file
@@ -25,148 +29,167 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 COHERE_API_KEY = os.environ.get("COHERE_API_KEY")
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
 
-# Check for API keys at the start of the module
 if not COHERE_API_KEY:
-    logging.critical("COHERE_API_KEY not found in environment variables. Flask app will not function correctly.")
-    # sys.exit("Error: Missing COHERE_API_KEY.") # Exiting here would prevent Flask from starting
+    logging.critical("COHERE_API_KEY not found. Flask app may not function correctly.")
 if not PINECONE_API_KEY:
-    logging.critical("PINECONE_API_KEY not found in environment variables. Flask app will not function correctly.")
-    # sys.exit("Error: Missing PINECONE_API_KEY.")
+    logging.critical("PINECONE_API_KEY not found. Flask app may not function correctly.")
 
 # --- Pinecone Settings ---
-PINECONE_INDEX_NAME = "solidcam-chatbot-image-embeddings" # Must match your populated index
+PINECONE_INDEX_NAME = "solidcam-chatbot-image-embeddings"
 
 # --- Cohere Settings ---
-COHERE_EMBED_MODEL_NAME = 'embed-v4.0'        # Model name for embeddings
-COHERE_TARGET_EMBED_DIMENSION = 1024          # Desired dimension for Pinecone and queries
-COHERE_GEN_MODEL = 'command-r'                # For generating answers
-COHERE_RERANK_MODEL = 'rerank-english-v3.0'   # For reranking retrieved documents
+COHERE_EMBED_MODEL_NAME = 'embed-v4.0'
+COHERE_TARGET_EMBED_DIMENSION = 1024
+COHERE_GEN_MODEL = 'command-r' # Or 'command-r-plus' if available and preferred
+COHERE_RERANK_MODEL = 'rerank-english-v3.0' # Or other rerank models
 # Parameters for ClientV2().embed() used in custom embedding class
 COHERE_INPUT_TYPE_DOC_FOR_V2_EMBED = "search_document"
 COHERE_INPUT_TYPE_QUERY_FOR_V2_EMBED = "search_query"
 COHERE_EMBEDDING_TYPES_FOR_V2_EMBED = ["float"]
 
 # --- RAG Settings ---
-RERANK_TOP_N = 3          # Number of documents to pass to the LLM after reranking
-INITIAL_RETRIEVAL_K = 10  # Number of initial documents to fetch from Pinecone
+RERANK_TOP_N = 3
+INITIAL_RETRIEVAL_K = 10
 
 # --- Custom Langchain-compatible Cohere Embeddings Class using ClientV2 ---
-# This class ensures output_dimension is respected, based on successful embed_and_store.py pattern
 class CustomCohereEmbeddingsWithClientV2(Embeddings):
-    client: cohere.ClientV2 # Use cohere.ClientV2
+    """
+    Custom Langchain Embeddings class using cohere.ClientV2.
+    Ensures `output_dimension` is respected for query embeddings to match document embeddings.
+    Uses the `inputs` parameter structure for Cohere's embed API v4.0.
+    """
+    client: cohere.ClientV2
     model: str
     output_dimension: int
     embedding_types: List[str]
+    input_type: str # To specify "search_query" or "search_document"
 
-    def __init__(self, api_key: str, model_name: str, output_dim: int, embedding_types: List[str]):
+    def __init__(self, api_key: str, model_name: str, output_dim: int, embedding_types: List[str], input_type_for_embedding: str):
         super().__init__()
-        self.client = cohere.ClientV2(api_key=api_key) # Initialize ClientV2
+        self.client = cohere.ClientV2(api_key=api_key)
         self.model = model_name
         self.output_dimension = output_dim
         self.embedding_types = embedding_types
+        self.input_type = input_type_for_embedding
 
-    def _prepare_inputs_for_clientv2(self, texts: List[str]) -> List[dict]:
+    def _prepare_inputs_for_clientv2(self, texts: List[str]) -> List[Dict[str, Any]]:
         """Prepares the structured input for ClientV2 embed method's 'inputs' parameter."""
         structured_inputs = []
         for text_item in texts:
-            if text_item and text_item.strip(): # Ensure text_item is not empty or just whitespace
-                # This structure worked in embed_and_store.py for ClientV2
-                content_list = [{"type": "text", "text": text_item}]
+            if text_item and text_item.strip():
+                # For embed-v4.0, the `inputs` parameter takes a list of dictionaries,
+                # where each dictionary has a "content" key.
+                # The "content" is a list of parts (e.g., text, image_url).
+                # For query embedding, we typically only have text.
+                content_list = [{"type": "text", "text": text_item.strip()}]
                 structured_inputs.append({"content": content_list})
             else:
                 logging.debug(f"Skipping empty text item during input preparation: '{text_item}'")
         return structured_inputs
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """Embed a list of documents."""
-        if not texts: return []
+        """Embed a list of documents. This will use 'search_document' input type."""
+        if not texts: return [[] for _ in texts] # Return list of empty lists if no texts
+        
+        # Override input_type for document embedding if it was set for query
+        original_input_type = self.input_type
+        self.input_type = COHERE_INPUT_TYPE_DOC_FOR_V2_EMBED
         
         prepared_inputs = self._prepare_inputs_for_clientv2(texts)
         
-        if not prepared_inputs: # If all texts were empty/whitespace
-            logging.warning("embed_documents: All input texts were empty or whitespace. Returning list of empty embeddings.")
-            return [[] for _ in texts] # Match original length with empty embeddings
+        self.input_type = original_input_type # Restore original input type
+
+        if not prepared_inputs:
+            logging.warning("embed_documents: All input texts were empty. Returning list of empty embeddings.")
+            return [[] for _ in texts]
 
         try:
             response = self.client.embed(
                 model=self.model,
-                inputs=prepared_inputs, # Use the structured inputs
-                input_type=COHERE_INPUT_TYPE_DOC_FOR_V2_EMBED, # Use constant
+                inputs=prepared_inputs,
+                input_type=COHERE_INPUT_TYPE_DOC_FOR_V2_EMBED, # Explicitly for documents
                 embedding_types=self.embedding_types,
                 output_dimension=self.output_dimension
             )
-            # Access embeddings from response.embeddings.float for ClientV2
-            if hasattr(response, 'embeddings') and response.embeddings and \
-               hasattr(response.embeddings, 'float') and \
-               len(response.embeddings.float) == len(prepared_inputs):
-                
-                # Map results back to the original length of `texts`, inserting [] for those that were filtered out
-                # This ensures the output list length matches the input list length, as Langchain expects.
-                valid_input_texts = [t for t in texts if t and t.strip()] # Texts that were actually embedded
-                embeddings_map = {original_text: emb for original_text, emb in zip(valid_input_texts, response.embeddings.float)}
-                final_embeddings = [embeddings_map.get(text, []) for text in texts]
+            
+            embeddings = None
+            if hasattr(response, 'embeddings'):
+                if isinstance(response.embeddings, list): embeddings = response.embeddings
+                elif hasattr(response.embeddings, 'float') and isinstance(response.embeddings.float, list): embeddings = response.embeddings.float
+                elif isinstance(response.embeddings, dict) and 'float' in response.embeddings: embeddings = response.embeddings['float']
+
+            if embeddings and len(embeddings) == len(prepared_inputs):
+                # Map results back to the original length of `texts`
+                valid_texts_map = {text: emb for text, emb in zip([t for t in texts if t and t.strip()], embeddings)}
+                final_embeddings = [valid_texts_map.get(text, []) for text in texts]
                 return final_embeddings
             else:
-                num_embeddings_received = len(response.embeddings.float) if hasattr(response, 'embeddings') and hasattr(response.embeddings, 'float') else 'N/A'
-                logging.error(f"Cohere (ClientV2) embed_documents response error or mismatch. Expected {len(prepared_inputs)} embeddings, got {num_embeddings_received}.")
-                return [[] for _ in texts] # Return empty embeddings for all on error
+                logging.error(f"Cohere embed_documents error or mismatch. Expected {len(prepared_inputs)} embeddings. Got: {len(embeddings) if embeddings else 'None'}")
+                return [[] for _ in texts]
         except Exception as e:
             logging.error(f"Error embedding documents with Cohere (ClientV2): {e}", exc_info=True)
-            return [[] for _ in texts] # Return empty embeddings for all on error
+            return [[] for _ in texts]
 
     def embed_query(self, text: str) -> List[float]:
-        """Embed a single query."""
-        if not text or not text.strip(): # Handle empty or whitespace-only query
-            logging.warning("Embed_query received an empty or whitespace-only query. Returning empty list.")
+        """Embed a single query. This will use 'search_query' input type."""
+        if not text or not text.strip():
+            logging.warning("Embed_query received an empty query. Returning empty list.")
             return []
 
-        prepared_inputs = self._prepare_inputs_for_clientv2([text]) # Prepare input for the single query
-        if not prepared_inputs: # Should only happen if text was empty, handled above
-             return []
+        prepared_inputs = self._prepare_inputs_for_clientv2([text])
+        if not prepared_inputs: return []
 
         try:
             response = self.client.embed(
                 model=self.model,
-                inputs=prepared_inputs, # Use the structured inputs
-                input_type=COHERE_INPUT_TYPE_QUERY_FOR_V2_EMBED, # Use constant
+                inputs=prepared_inputs,
+                input_type=COHERE_INPUT_TYPE_QUERY_FOR_V2_EMBED, # Explicitly for queries
                 embedding_types=self.embedding_types,
                 output_dimension=self.output_dimension
             )
-            if hasattr(response, 'embeddings') and response.embeddings and \
-               hasattr(response.embeddings, 'float') and \
-               len(response.embeddings.float) == 1: # Expect one embedding for a single query
-                return response.embeddings.float[0]
+            embeddings = None
+            if hasattr(response, 'embeddings'):
+                if isinstance(response.embeddings, list) and len(response.embeddings) > 0 : embeddings = response.embeddings[0] # Expect single list for single query
+                elif hasattr(response.embeddings, 'float') and isinstance(response.embeddings.float, list) and len(response.embeddings.float) > 0: embeddings = response.embeddings.float[0]
+                elif isinstance(response.embeddings, dict) and 'float' in response.embeddings and len(response.embeddings['float']) > 0 : embeddings = response.embeddings['float'][0]
+
+            if embeddings:
+                return embeddings
             else:
-                logging.error(f"Cohere (ClientV2) embed_query response error or mismatch. Response: {response}")
-                return [] # Return empty list on error
+                logging.error(f"Cohere embed_query error or mismatch. Response: {response}")
+                return []
         except Exception as e:
             logging.error(f"Error embedding query with Cohere (ClientV2): {e}", exc_info=True)
-            return [] # Return empty list on error
+            return []
 
 # --- Global Chatbot Chain Initialization ---
-qa_chain = None # Global variable for the Langchain chain
+qa_chain = None
 
 def initialize_chatbot():
     """Initializes the Langchain ConversationalRetrievalChain."""
     global qa_chain
-    if not COHERE_API_KEY or not PINECONE_API_KEY: # Double check API keys before expensive init
+    if not COHERE_API_KEY or not PINECONE_API_KEY:
         logging.error("API keys for Cohere or Pinecone are missing. Chatbot cannot be initialized.")
         return
 
     try:
-        logging.info(f"Initializing CustomCohereEmbeddingsWithClientV2: model={COHERE_EMBED_MODEL_NAME}, dimension={COHERE_TARGET_EMBED_DIMENSION}")
-        custom_embeddings = CustomCohereEmbeddingsWithClientV2(
+        logging.info(f"Initializing CustomCohereEmbeddings for queries: model={COHERE_EMBED_MODEL_NAME}, dim={COHERE_TARGET_EMBED_DIMENSION}")
+        # This instance is specifically for query embeddings
+        custom_query_embeddings = CustomCohereEmbeddingsWithClientV2(
             api_key=COHERE_API_KEY,
             model_name=COHERE_EMBED_MODEL_NAME,
             output_dim=COHERE_TARGET_EMBED_DIMENSION,
-            embedding_types=COHERE_EMBEDDING_TYPES_FOR_V2_EMBED # Pass the constant
+            embedding_types=COHERE_EMBEDDING_TYPES_FOR_V2_EMBED,
+            input_type_for_embedding=COHERE_INPUT_TYPE_QUERY_FOR_V2_EMBED # For queries
         )
 
         logging.info(f"Connecting to Pinecone index: {PINECONE_INDEX_NAME}")
+        # PineconeVectorStore will use the `embed_query` method of custom_query_embeddings for similarity search
+        # and `embed_documents` if it needs to embed documents (e.g. for from_texts, not used here)
         vectorstore = PineconeVectorStore.from_existing_index(
             index_name=PINECONE_INDEX_NAME,
-            embedding=custom_embeddings,
-            text_key="text_snippet" # Use the metadata field containing the main text for page_content
+            embedding=custom_query_embeddings, # Pass the custom embeddings object
+            text_key="text_snippet" # Assumes 'text_snippet' in metadata contains the main text
         )
         logging.info("Successfully connected to Pinecone.")
 
@@ -185,81 +208,75 @@ def initialize_chatbot():
         logging.info(f"Initializing Cohere Chat model: {COHERE_GEN_MODEL}")
         llm = ChatCohere(model=COHERE_GEN_MODEL, temperature=0.2, cohere_api_key=COHERE_API_KEY)
 
-        # For a web app, conversation memory needs careful management if you want separate
-        # conversations per user/session. For this example, we use a single global memory
-        # associated with the qa_chain. This means all users share the same conversation history.
-        # For per-user history, you'd typically create/retrieve memory instances based on session IDs.
         memory = ConversationBufferMemory(
             memory_key='chat_history',
             return_messages=True,
-            output_key='answer' # Ensures the LLM's response is stored as 'answer'
+            output_key='answer'
         )
         logging.info("Conversation memory initialized.")
 
         qa_chain = ConversationalRetrievalChain.from_llm(
             llm=llm,
             retriever=compression_retriever,
-            memory=memory, # The chain will use this memory instance
-            return_source_documents=True, # To inspect which documents were used
-            output_key='answer' # Consistent output key
+            memory=memory,
+            return_source_documents=True,
+            output_key='answer'
         )
         logging.info("ConversationalRetrievalChain created successfully and is ready.")
     except Exception as e:
         logging.error(f"Fatal error during Langchain component initialization: {e}", exc_info=True)
-        qa_chain = None # Ensure chain is None if initialization fails
+        qa_chain = None
 
 # --- Flask App Setup ---
-app = Flask(__name__)
-CORS(app) # Enable CORS for all routes, allowing frontend from any origin (useful for dev)
+app = Flask(__name__, template_folder='templates') # Ensure 'templates' folder exists for index.html
+CORS(app)
 
-# Initialize the chatbot when the Flask app starts
-# This will run once when the first request comes in or at startup depending on Flask version/config.
-# For more control, you can use Flask's @app.before_first_request (deprecated) or other app context methods.
-initialize_chatbot()
+initialize_chatbot() # Initialize chatbot components when app starts
 
 @app.route('/')
-def index_route(): # Renamed from 'index' to avoid conflict with Pinecone's index object if it were global
+def index_route():
     """Serves the main HTML page for the chatbot UI."""
     return render_template('index.html')
 
 @app.route('/chat', methods=['POST'])
-def chat_route(): # Renamed from 'chat' for clarity
+def chat_route():
     """Handles chat messages from the user and returns bot responses."""
-    global qa_chain # Access the globally initialized chain
+    global qa_chain
     if qa_chain is None:
-        logging.error("Chatbot chain is not initialized. API keys might be missing or Pinecone/Cohere connection failed.")
-        # Attempt to re-initialize if it failed earlier (e.g., due to transient network issue at startup)
-        # This is a simple retry, more robust error handling might be needed in production.
-        initialize_chatbot()
-        if qa_chain is None: # If still not initialized
-             return jsonify({"error": "Chatbot is not available. Initialization failed. Please check server logs."}), 503 # Service Unavailable
+        logging.error("Chatbot chain is not initialized. Attempting re-initialization.")
+        initialize_chatbot() # Attempt to re-initialize
+        if qa_chain is None:
+             logging.error("Re-initialization failed. Chatbot unavailable.")
+             return jsonify({"error": "Chatbot is not available. Initialization failed. Please check server logs."}), 503
 
     try:
         data = request.get_json()
         user_message = data.get('message')
 
-        if not user_message:
-            return jsonify({"error": "No message provided in the request body"}), 400
+        if not user_message or not user_message.strip():
+            return jsonify({"error": "No message provided or message is empty"}), 400
 
-        logging.info(f"Received user message via API: '{user_message}'")
-
-        # Invoke the Langchain chain. The chain's internal memory handles conversation history.
+        logging.info(f"Received user message: '{user_message}'")
+        
+        # Invoke the Langchain chain
         result = qa_chain.invoke({"question": user_message})
-
         bot_answer = result.get('answer', "Sorry, I couldn't generate a response at this moment.")
         
         source_documents_data = []
         if 'source_documents' in result and result['source_documents']:
-            for doc_obj in result['source_documents']: # doc_obj is a Langchain Document object
+            for doc_obj in result['source_documents']:
                 metadata = doc_obj.metadata if hasattr(doc_obj, 'metadata') else {}
-                # Ensure page_content is a string, default to empty if None
                 page_content_str = doc_obj.page_content if hasattr(doc_obj, 'page_content') and doc_obj.page_content is not None else ""
                 
+                # Extract image_data_urls from metadata if present
+                image_urls = metadata.get('image_data_urls', []) 
+                
                 source_documents_data.append({
-                    "id": metadata.get('vector_id', 'N/A'), # Use 'vector_id' from metadata
+                    "id": metadata.get('vector_id', 'N/A'),
                     "page": metadata.get('page', 'N/A'),
                     "header": metadata.get('header', 'N/A'),
-                    "snippet": metadata.get('text_snippet', page_content_str)[:200] + "..." # Use text_snippet or page_content
+                    "snippet": metadata.get('text_snippet', page_content_str)[:300] + "...", # Slightly longer snippet
+                    "image_data_urls": image_urls # Pass the image URLs to the frontend
                 })
         
         logging.info(f"Sending bot answer: '{bot_answer}' with {len(source_documents_data)} sources.")
@@ -274,7 +291,8 @@ def chat_route(): # Renamed from 'chat' for clarity
 
 if __name__ == '__main__':
     # For development, Flask's built-in server is fine.
-    # For production, use a more robust WSGI server like Gunicorn or Waitress.
+    # For production, use a WSGI server like Gunicorn.
     # Example: gunicorn -w 4 -b 0.0.0.0:7001 app:app
-    # The host='0.0.0.0' makes the server accessible from your network, not just localhost.
-    app.run(debug=True, host='0.0.0.0', port=7001) # debug=True enables live reloading and debugger (for development only!)
+    # The host='0.0.0.0' makes the server accessible from your network.
+    # Ensure the 'templates' folder with 'index.html' is in the same directory as app.py or adjust template_folder path.
+    app.run(debug=True, host='0.0.0.0', port=7001) # debug=True for development

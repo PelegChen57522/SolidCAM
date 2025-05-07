@@ -1,12 +1,13 @@
 # rag_chatbot.py
+# Command-line interface for the RAG Chatbot.
 
 import os
 import logging
 from dotenv import load_dotenv
-from typing import List
+from typing import List, Dict, Any
 import sys
 
-import cohere # For cohere.ClientV2
+import cohere
 from langchain_core.embeddings import Embeddings
 from langchain_pinecone import PineconeVectorStore
 from langchain.memory import ConversationBufferMemory
@@ -23,11 +24,11 @@ COHERE_API_KEY = os.environ.get("COHERE_API_KEY")
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
 
 if not COHERE_API_KEY:
-    logging.error("COHERE_API_KEY not found in environment variables.")
-    sys.exit("Error: Missing COHERE_API_KEY. Please set it in your .env file.")
+    logging.error("COHERE_API_KEY not found. Please set it in your .env file.")
+    sys.exit("Error: Missing COHERE_API_KEY.")
 if not PINECONE_API_KEY:
-    logging.error("PINECONE_API_KEY not found in environment variables.")
-    sys.exit("Error: Missing PINECONE_API_KEY. Please set it in your .env file.")
+    logging.error("PINECONE_API_KEY not found. Please set it in your .env file.")
+    sys.exit("Error: Missing PINECONE_API_KEY.")
 
 # --- Pinecone Settings ---
 PINECONE_INDEX_NAME = "solidcam-chatbot-image-embeddings"
@@ -37,7 +38,6 @@ COHERE_EMBED_MODEL_NAME = 'embed-v4.0'
 COHERE_TARGET_EMBED_DIMENSION = 1024
 COHERE_GEN_MODEL = 'command-r'
 COHERE_RERANK_MODEL = 'rerank-english-v3.0'
-# Parameters for ClientV2().embed()
 COHERE_INPUT_TYPE_DOC_FOR_V2_EMBED = "search_document"
 COHERE_INPUT_TYPE_QUERY_FOR_V2_EMBED = "search_query"
 COHERE_EMBEDDING_TYPES_FOR_V2_EMBED = ["float"]
@@ -46,162 +46,101 @@ COHERE_EMBEDDING_TYPES_FOR_V2_EMBED = ["float"]
 RERANK_TOP_N = 3
 INITIAL_RETRIEVAL_K = 10
 
-# --- Custom Langchain-compatible Cohere Embeddings Class using ClientV2 ---
+# --- Custom Langchain-compatible Cohere Embeddings Class (same as in app.py) ---
 class CustomCohereEmbeddingsWithClientV2(Embeddings):
-    """
-    Custom Langchain Embeddings class that uses cohere.ClientV2
-    and the 'inputs' parameter structure to ensure output_dimension is respected,
-    mirroring the successful approach in embed_and_store.py.
-    """
-    client: cohere.ClientV2 # Use ClientV2
+    client: cohere.ClientV2
     model: str
     output_dimension: int
     embedding_types: List[str]
+    input_type: str
 
-    def __init__(self, api_key: str, model_name: str, output_dim: int, embedding_types: List[str]):
+    def __init__(self, api_key: str, model_name: str, output_dim: int, embedding_types: List[str], input_type_for_embedding: str):
         super().__init__()
-        self.client = cohere.ClientV2(api_key=api_key) # Initialize ClientV2
+        self.client = cohere.ClientV2(api_key=api_key)
         self.model = model_name
         self.output_dimension = output_dim
         self.embedding_types = embedding_types
+        self.input_type = input_type_for_embedding
 
-    def _prepare_inputs_for_clientv2(self, texts: List[str]) -> List[dict]:
-        """Prepares the structured input for ClientV2 embed method's 'inputs' parameter."""
+    def _prepare_inputs_for_clientv2(self, texts: List[str]) -> List[Dict[str, Any]]:
         structured_inputs = []
         for text_item in texts:
-            if text_item and text_item.strip(): # Ensure text_item is not empty or just whitespace
-                # This structure worked in embed_and_store.py for ClientV2
-                content_list = [{"type": "text", "text": text_item}]
+            if text_item and text_item.strip():
+                content_list = [{"type": "text", "text": text_item.strip()}]
                 structured_inputs.append({"content": content_list})
             else:
-                # If the text is empty, we might need to add a placeholder or handle it
-                # For now, let's skip empty texts to avoid sending empty content to API
                 logging.debug(f"Skipping empty text item: '{text_item}'")
         return structured_inputs
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """Embed a list of documents."""
-        if not texts:
-            return []
-        
+        if not texts: return [[] for _ in texts]
+        original_input_type = self.input_type
+        self.input_type = COHERE_INPUT_TYPE_DOC_FOR_V2_EMBED
         prepared_inputs = self._prepare_inputs_for_clientv2(texts)
-        
-        # If all texts were empty/whitespace and prepared_inputs is empty
-        if not prepared_inputs:
-            logging.warning("embed_documents: All input texts were empty or whitespace. Returning list of empty embeddings.")
-            return [[] for _ in texts] # Match original length with empty embeddings
-
+        self.input_type = original_input_type
+        if not prepared_inputs: return [[] for _ in texts]
         try:
-            response = self.client.embed(
-                model=self.model,
-                inputs=prepared_inputs, # Use the structured inputs
-                input_type=COHERE_INPUT_TYPE_DOC_FOR_V2_EMBED,
-                embedding_types=self.embedding_types,
-                output_dimension=self.output_dimension
-            )
-            if hasattr(response, 'embeddings') and response.embeddings and \
-               hasattr(response.embeddings, 'float') and \
-               len(response.embeddings.float) == len(prepared_inputs):
-                
-                # Map results back to the original length of `texts`, inserting [] for those that were filtered out
-                embeddings_dict = {original_text: emb for original_text, emb in zip([t for t in texts if t and t.strip()], response.embeddings.float)}
-                final_embeddings = [embeddings_dict.get(text, []) for text in texts]
-                return final_embeddings
-            else:
-                num_embeddings_received = len(response.embeddings.float) if hasattr(response, 'embeddings') and hasattr(response.embeddings, 'float') else 'N/A'
-                logging.error(f"Cohere (ClientV2) embed_documents response error or mismatch. Expected {len(prepared_inputs)} embeddings, got {num_embeddings_received}.")
-                return [[] for _ in texts]
+            response = self.client.embed(model=self.model, inputs=prepared_inputs, input_type=COHERE_INPUT_TYPE_DOC_FOR_V2_EMBED, embedding_types=self.embedding_types, output_dimension=self.output_dimension)
+            embeddings = None
+            if hasattr(response, 'embeddings'):
+                if isinstance(response.embeddings, list): embeddings = response.embeddings
+                elif hasattr(response.embeddings, 'float') and isinstance(response.embeddings.float, list): embeddings = response.embeddings.float
+                elif isinstance(response.embeddings, dict) and 'float' in response.embeddings: embeddings = response.embeddings['float']
+            if embeddings and len(embeddings) == len(prepared_inputs):
+                valid_texts_map = {text: emb for text, emb in zip([t for t in texts if t and t.strip()], embeddings)}
+                return [valid_texts_map.get(text, []) for text in texts]
+            return [[] for _ in texts]
         except Exception as e:
-            logging.error(f"Error embedding documents with Cohere (ClientV2): {e}", exc_info=True)
+            logging.error(f"Error embedding documents (CLI): {e}", exc_info=True)
             return [[] for _ in texts]
 
     def embed_query(self, text: str) -> List[float]:
-        """Embed a single query."""
-        if not text or not text.strip():
-            logging.warning("Embed_query received an empty or whitespace-only query.")
-            return []
-
+        if not text or not text.strip(): return []
         prepared_inputs = self._prepare_inputs_for_clientv2([text])
-        if not prepared_inputs: # Should only happen if text was empty, handled above
-             return []
-
+        if not prepared_inputs: return []
         try:
-            response = self.client.embed(
-                model=self.model,
-                inputs=prepared_inputs, # Use the structured inputs
-                input_type=COHERE_INPUT_TYPE_QUERY_FOR_V2_EMBED,
-                embedding_types=self.embedding_types,
-                output_dimension=self.output_dimension
-            )
-            if hasattr(response, 'embeddings') and response.embeddings and \
-               hasattr(response.embeddings, 'float') and \
-               len(response.embeddings.float) == 1:
-                return response.embeddings.float[0]
-            else:
-                logging.error(f"Cohere (ClientV2) embed_query response error or mismatch. Response: {response}")
-                return []
+            response = self.client.embed(model=self.model, inputs=prepared_inputs, input_type=COHERE_INPUT_TYPE_QUERY_FOR_V2_EMBED, embedding_types=self.embedding_types, output_dimension=self.output_dimension)
+            embeddings = None
+            if hasattr(response, 'embeddings'):
+                if isinstance(response.embeddings, list) and response.embeddings: embeddings = response.embeddings[0]
+                elif hasattr(response.embeddings, 'float') and isinstance(response.embeddings.float, list) and response.embeddings.float: embeddings = response.embeddings.float[0]
+                elif isinstance(response.embeddings, dict) and 'float' in response.embeddings and response.embeddings['float']: embeddings = response.embeddings['float'][0]
+            return embeddings if embeddings else []
         except Exception as e:
-            logging.error(f"Error embedding query with Cohere (ClientV2): {e}", exc_info=True)
+            logging.error(f"Error embedding query (CLI): {e}", exc_info=True)
             return []
 
 def main():
-    logging.info("Initializing RAG Chatbot components...")
+    logging.info("Initializing RAG Chatbot components (CLI)...")
+    qa_chain_cli = None
     try:
-        logging.info(f"Initializing CustomCohereEmbeddingsWithClientV2: model={COHERE_EMBED_MODEL_NAME}, dimension={COHERE_TARGET_EMBED_DIMENSION}")
-        custom_embeddings = CustomCohereEmbeddingsWithClientV2(
-            api_key=COHERE_API_KEY,
-            model_name=COHERE_EMBED_MODEL_NAME,
-            output_dim=COHERE_TARGET_EMBED_DIMENSION,
-            embedding_types=COHERE_EMBEDDING_TYPES_FOR_V2_EMBED # Pass the constant
+        custom_query_embeddings_cli = CustomCohereEmbeddingsWithClientV2(
+            api_key=COHERE_API_KEY, model_name=COHERE_EMBED_MODEL_NAME,
+            output_dim=COHERE_TARGET_EMBED_DIMENSION, embedding_types=COHERE_EMBEDDING_TYPES_FOR_V2_EMBED,
+            input_type_for_embedding=COHERE_INPUT_TYPE_QUERY_FOR_V2_EMBED
         )
-
-        logging.info(f"Connecting to Pinecone index: {PINECONE_INDEX_NAME}")
-        vectorstore = PineconeVectorStore.from_existing_index(
-            index_name=PINECONE_INDEX_NAME,
-            embedding=custom_embeddings,
-            text_key="text_snippet" # Use the metadata field containing the main text
+        vectorstore_cli = PineconeVectorStore.from_existing_index(
+            index_name=PINECONE_INDEX_NAME, embedding=custom_query_embeddings_cli, text_key="text_snippet"
         )
-        logging.info("Successfully connected to Pinecone.")
-
-        base_retriever = vectorstore.as_retriever(search_kwargs={"k": INITIAL_RETRIEVAL_K})
-        logging.info(f"Base retriever initialized (fetches k={INITIAL_RETRIEVAL_K}).")
-
-        logging.info(f"Initializing Cohere Reranker: {COHERE_RERANK_MODEL}")
-        reranker = CohereRerank(model=COHERE_RERANK_MODEL, top_n=RERANK_TOP_N, cohere_api_key=COHERE_API_KEY)
-
-        compression_retriever = ContextualCompressionRetriever(
-            base_compressor=reranker,
-            base_retriever=base_retriever
+        base_retriever_cli = vectorstore_cli.as_retriever(search_kwargs={"k": INITIAL_RETRIEVAL_K})
+        reranker_cli = CohereRerank(model=COHERE_RERANK_MODEL, top_n=RERANK_TOP_N, cohere_api_key=COHERE_API_KEY)
+        compression_retriever_cli = ContextualCompressionRetriever(base_compressor=reranker_cli, base_retriever=base_retriever_cli)
+        llm_cli = ChatCohere(model=COHERE_GEN_MODEL, temperature=0.2, cohere_api_key=COHERE_API_KEY)
+        memory_cli = ConversationBufferMemory(memory_key='chat_history', return_messages=True, output_key='answer')
+        
+        qa_chain_cli = ConversationalRetrievalChain.from_llm(
+            llm=llm_cli, retriever=compression_retriever_cli, memory=memory_cli,
+            return_source_documents=True, output_key='answer'
         )
-        logging.info(f"Contextual Compression Retriever initialized (reranks to top_n={RERANK_TOP_N}).")
-
-        logging.info(f"Initializing Cohere Chat model: {COHERE_GEN_MODEL}")
-        llm = ChatCohere(model=COHERE_GEN_MODEL, temperature=0.2, cohere_api_key=COHERE_API_KEY)
-
-        memory = ConversationBufferMemory(
-            memory_key='chat_history',
-            return_messages=True,
-            output_key='answer'
-        )
-        logging.info("Conversation memory initialized.")
-
-        qa_chain = ConversationalRetrievalChain.from_llm(
-            llm=llm,
-            retriever=compression_retriever,
-            memory=memory,
-            return_source_documents=True,
-            output_key='answer'
-        )
-        logging.info("ConversationalRetrievalChain created successfully.")
-
+        logging.info("CLI Chatbot components initialized successfully.")
     except Exception as e:
-        logging.error(f"Fatal error during Langchain component initialization: {e}", exc_info=True)
-        print("Error: Could not initialize chatbot components. Please check API keys and configurations. Exiting.")
+        logging.error(f"Fatal error during CLI Langchain component initialization: {e}", exc_info=True)
+        print("\nError: Could not initialize chatbot components. Please check API keys and configurations. Exiting.")
         return
 
-    print("\n--- SolidCAM RAG Chatbot ---")
+    print("\n--- SolidCAM RAG Chatbot (CLI) ---")
     print(f"Powered by Cohere ({COHERE_GEN_MODEL}) and Pinecone.")
-    print(f"Embedding with {COHERE_EMBED_MODEL_NAME} at {COHERE_TARGET_EMBED_DIMENSION} dimensions (using ClientV2 for queries).")
+    print(f"Embedding with {COHERE_EMBED_MODEL_NAME} (multimodal for docs, text for queries).")
     print("Ask questions about the 'Milling 2024 Machining Processes' document.")
     print("Type 'quit' or 'exit' to end the chat.")
 
@@ -214,22 +153,24 @@ def main():
             if not user_query.strip():
                 continue
 
-            logging.info(f"Processing user query: '{user_query}'")
-            result = qa_chain.invoke({"question": user_query})
+            logging.info(f"CLI - Processing user query: '{user_query}'")
+            result = qa_chain_cli.invoke({"question": user_query})
 
-            print(f"\nBot: {result['answer']}")
+            print(f"\nBot: {result.get('answer', 'No answer generated.')}")
 
             if 'source_documents' in result and result['source_documents']:
                 print("\n--- Retrieved Sources (Post-Reranking) ---")
                 for i, doc in enumerate(result['source_documents']):
                     metadata = doc.metadata
-                    print(f"  Source {i+1}: ID='{metadata.get('id', 'N/A')}', "
+                    print(f"  Source {i+1}: ID='{metadata.get('vector_id', 'N/A')}', "
                           f"Page={metadata.get('page', 'N/A')}, "
-                          f"Header='{metadata.get('header', 'N/A')}'")
+                          f"Header='{metadata.get('header', 'N/A')}', "
+                          f"Has Images={metadata.get('has_images', False)}")
+                    # For CLI, we don't display images, but we can acknowledge if they are present.
                 print("--- End Sources ---")
         except Exception as e:
-            logging.error(f"Error during chat interaction: {e}", exc_info=True)
-            print("\nBot: My apologies, I encountered an issue while processing your request. Please try again.")
+            logging.error(f"Error during CLI chat interaction: {e}", exc_info=True)
+            print("\nBot: My apologies, I encountered an issue. Please try again.")
 
 if __name__ == "__main__":
     main()
