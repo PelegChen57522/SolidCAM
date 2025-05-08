@@ -1,6 +1,3 @@
-# MistralAI_OCR.py
-# Processes a PDF using Mistral AI OCR to extract markdown text and base64 encoded images.
-
 import os
 import logging
 import json
@@ -15,11 +12,7 @@ load_dotenv() # Load environment variables from .env file
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Input/Output Paths ---
-# IMPORTANT: Update this path to your PDF file if it's different.
-# PDF_FILE_PATH = "Milling 2024 Machining Processes.pdf" # Original relative path
-# --- CORRECTED PATH ---
-PDF_FILE_PATH = "/Users/pelegchen/SolidCAM_ChatBotImageEmbeddings/pdf_files/Milling 2024 Machining Processes.pdf" # Full path provided by user
-# --- END CORRECTION ---
+PDF_FILE_PATH = "/Users/pelegchen/SolidCAM_ChatBotImageEmbeddings/pdf_files/Milling 2024 Machining Processes.pdf" 
 
 OUTPUT_OCR_JSON_FILE = "processed_solidcam_doc.json" # Output file for structured OCR data
 
@@ -29,8 +22,8 @@ if not MISTRAL_API_KEY:
     logging.error("MISTRAL_API_KEY not found in environment variables. Please set it in your .env file.")
     sys.exit("Error: Missing MISTRAL_API_KEY.")
 
-MISTRAL_OCR_MODEL = "mistral-ocr-latest" # Model for OCR
-FILE_UPLOAD_PURPOSE = 'ocr' # Purpose for file upload as required by Mistral API
+MISTRAL_OCR_MODEL = "mistral-ocr-latest" 
+FILE_UPLOAD_PURPOSE = 'ocr' 
 
 def run_ocr_on_pdf(pdf_path: str, output_json_path: str):
     """
@@ -131,7 +124,6 @@ def run_ocr_on_pdf(pdf_path: str, output_json_path: str):
                             logging.warning(f"Image with ID '{image_id}' on page {getattr(page_obj, 'index', 'unknown')} had empty base64 data.")
 
                     if images_data_for_page and not any(d.get('base64') for d in images_data_for_page):
-                         # This condition might be redundant now due to the check above
                          logging.warning(f"Requested images for page {getattr(page_obj, 'index', 'unknown')}, but received no valid base64 data after processing.")
                 else:
                      logging.info(f"No 'images' attribute found or images list empty for page {getattr(page_obj, 'index', 'unknown')}.")
@@ -162,7 +154,6 @@ def run_ocr_on_pdf(pdf_path: str, output_json_path: str):
          logging.error(f"A Type Error occurred (likely with Mistral client arguments): {te}", exc_info=True)
          sys.exit("Error: MistralAI client interaction failed (TypeError).")
     except Exception as e: # Catch-all for other unexpected errors
-        # Check for specific MistralAI or Pydantic errors if possible
         if "ValidationError" in str(type(e)) or "Pydantic" in str(type(e)): # More specific error for Pydantic
              logging.error(f"Data Validation Error during API call: {e}", exc_info=True)
              sys.exit("Error: MistralAI client interaction failed (Data Validation). Check API compatibility.")
@@ -177,11 +168,11 @@ if __name__ == "__main__":
     try:
         run_ocr_on_pdf(PDF_FILE_PATH, OUTPUT_OCR_JSON_FILE)
         logging.info("MistralAI OCR script finished successfully.")
-    except SystemExit: # To allow sys.exit to terminate gracefully without further error messages
+    except SystemExit: 
         pass
     except Exception as main_e:
         logging.error(f"Script execution failed unexpectedly at the main level: {main_e}", exc_info=True)
-        sys.exit(1) # Exit with a non-zero code to indicate failure
+        sys.exit(1) 
     finally:
         end_time = time.time()
         logging.info(f"Total OCR script execution time: {end_time - start_time:.2f} seconds")

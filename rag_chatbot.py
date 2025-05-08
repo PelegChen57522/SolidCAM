@@ -1,6 +1,3 @@
-# rag_chatbot.py
-# Command-line interface for the RAG Chatbot.
-
 import os
 import logging
 from dotenv import load_dotenv

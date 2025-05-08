@@ -1,13 +1,9 @@
-# embed_and_store.py
-# Loads OCR data, chunks it, generates multimodal embeddings (text + images) using Cohere,
-# and stores them in Pinecone.
-
 import os
 import logging
 import re
 import json
-import cohere # Ensure cohere SDK is up-to-date
-from pinecone import Pinecone, ServerlessSpec, PodSpec # Import spec classes if creating index
+import cohere 
+from pinecone import Pinecone, ServerlessSpec, PodSpec 
 from dotenv import load_dotenv
 import time
 import sys
@@ -249,13 +245,12 @@ def embed_and_store():
         if c_id in successful_embeddings_map:
             embedding_vec = successful_embeddings_map[c_id]
             img_filenames = list(chunk_obj["images_dataurls"].keys())
-            # REMOVED: img_data_urls = list(chunk_obj["images_dataurls"].values())
+            
             meta_payload = {
                 "vector_id": c_id, "page": chunk_obj["page"] + 1, "header": chunk_obj.get("header", ""),
                 "text_snippet": chunk_obj["text"][:2000], 
                 "image_ids": img_filenames, # Store only image IDs (filenames)
                 "has_images": len(img_filenames) > 0
-                # REMOVED: "image_data_urls": img_data_urls 
             }
             pinecone_vectors_to_upsert.append({"id": c_id, "values": embedding_vec, "metadata": meta_payload})
         else:
